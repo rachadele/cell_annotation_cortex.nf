@@ -51,40 +51,46 @@ def setup(organism="homo_sapiens", version="2024-07-01"):
     return(outdir)
 
 #clean up cellxgene ontologies
-def rename_cells(obs):
-    
-#if organism == "Homo sapiens":
-    mapping = dict(obs[["cell_type","cell_type_ontology_term_id"]].drop_duplicates().values)
-    # add new CL terms to mapping dict
-    mapping["L2/3 intratelencephalic projecting glutamatergic neuron"] = "CL:4030059"
-    mapping["L4/5 intratelencephalic projecting glutamatergic neuron"] = "CL:4030062"
-    mapping["L5/6 near-projecting glutamatergic neuron"] = "CL:4030067"
-    mapping["L6 intratelencephalic projecting glutamatergic neuron"] = "CL:4030065"
-    
-    #change to cat.rename_categories
-    obs["cell_type"] = obs["cell_type"].replace({
-            "astrocyte of the cerebral cortex": "astrocyte",
-            "cerebral cortex endothelial cell": "endothelial cell",
-            "L2/3 intratelencephalic projecting glutamatergic neuron of the primary motor cortex": "L2/3 intratelencephalic projecting glutamatergic neuron",
-            "L4/5 intratelencephalic projecting glutamatergic neuron of the primary motor cortex": "L4/5 intratelencephalic projecting glutamatergic neuron",
-            "L5/6 near-projecting glutamatergic neuron of the primary motor cortex": "L5/6 near-projecting glutamatergic neuron",
-            "L6 intratelencephalic projecting glutamatergic neuron of the primary motor cortex": "L6 intratelencephalic projecting glutamatergic neuron"
-        })
 
-    obs["cell_type_ontology_term_id"] = obs["cell_type"].map(mapping)
+def rename_cells(obs, rename_file="/space/grp/rschwartz/rschwartz/cell_annotation_cortex.nf/meta/rename_cells.tsv"):
+    # Read renaming terms from file
+    rename_df = pd.read_csv(rename_file, sep="\t")
+    
+    # Ensure expected columns exist
+    if not {'cell_type', 'new_cell_type', 'cell_type_ontology_term_id'}.issubset(rename_df.columns):
+        raise ValueError("Rename file must contain 'cell_type', 'new_cell_type', and 'cell_type_ontology_term_id' columns.")
+    
+    # Create mapping dictionaries
+    rename_mapping = dict(zip(rename_df['cell_type'], rename_df['new_cell_type']))
+    ontology_mapping = dict(zip(rename_df['new_cell_type'], rename_df['cell_type_ontology_term_id']))
+    
+    # Apply renaming
+    obs['cell_type'] = obs['cell_type'].replace(rename_mapping)
+    
+    if pd.api.types.is_categorical_dtype(obs['cell_type_ontology_term_id']):
+        # Add any new categories to 'cell_type_ontology_term_id'
+        new_categories = list(set(ontology_mapping.values()) - set(obs['cell_type_ontology_term_id'].cat.categories))
+        if new_categories:
+            obs['cell_type_ontology_term_id'] = obs['cell_type_ontology_term_id'].cat.add_categories(new_categories)
+ 
+    # Assign new ontology IDs only for replaced cells
+    replaced_cells = obs['cell_type'].isin(rename_mapping.values())
+    obs.loc[replaced_cells, 'cell_type_ontology_term_id'] = obs.loc[replaced_cells, 'cell_type'].map(ontology_mapping)
+    
     return obs
+
 
 # Subsample x cells from each cell type if there are n>x cells present
 # ensures equal representation of cell types in reference
-def subsample_cells(data, filtered_ids, subsample=500, seed=42, organism="Homo sapiens"):
+def subsample_cells(data, filtered_ids, subsample=500, seed=42, organism="Homo sapiens", rename_file="/space/grp/rschwartz/rschwartz/cell_annotation_cortex.nf/meta/rename_cells.tsv"):
     random.seed(seed)         # For `random`
     np.random.seed(seed)      # For `numpy`
     scvi.settings.seed = seed # For `scvi`
     
     # Filter data based on filtered_ids
     obs = data[data['soma_joinid'].isin(filtered_ids)]
-    
-    obs = rename_cells(obs)
+
+    obs = rename_cells(obs, rename_file=rename_file)
  
     celltypes = obs["cell_type"].unique()
     final_idx = []
@@ -166,7 +172,7 @@ def split_and_extract_data(data, split_column, subsample=500, organism=None, cen
 
     return refs
 
-def get_brain_obs(census, organism, organ="brain", primary_data=True, disease="normal"):
+def get_cellxgene_obs(census, organism, organ="brain", primary_data=True, disease="normal"):
     value_filter = (
         f"tissue_general == '{organ}' and "
         f"is_primary_data == {str(primary_data)} and "
@@ -176,34 +182,32 @@ def get_brain_obs(census, organism, organ="brain", primary_data=True, disease="n
 
 
 def get_census(census_version="2024-07-01", organism="homo_sapiens", subsample=5, assay=None, tissue=None, organ="brain",
-               ref_collections=["Transcriptomic cytoarchitecture reveals principles of human neocortex organization"," SEA-AD: Seattle Alzheimer’s Disease Brain Cell Atlas"], seed=42):
+               ref_collections=["Transcriptomic cytoarchitecture reveals principles of human neocortex organization"," SEA-AD: Seattle Alzheimer’s Disease Brain Cell Atlas"], 
+               rename_file="/space/grp/rschwartz/rschwartz/cell_annotation_cortex.nf/meta/rename_cells.tsv",seed=42):
 
     census = cellxgene_census.open_soma(census_version=census_version)
     dataset_info = census.get("census_info").get("datasets").read().concat().to_pandas()
     
-    brain_obs = brain_obs = get_brain_obs(census, organism, organ=organ, primary_data=True, disease="normal")
+    cellxgene_obs = cellxgene_obs = get_cellxgene_obs(census, organism, organ=organ, primary_data=True, disease="normal")
 
-    brain_obs = brain_obs.merge(dataset_info, on="dataset_id", suffixes=(None,"_y"))
-    brain_obs.drop(columns=['soma_joinid_y'], inplace=True)
-    brain_obs_filtered = brain_obs[brain_obs['collection_name'].isin(ref_collections)]
+    cellxgene_obs = cellxgene_obs.merge(dataset_info, on="dataset_id", suffixes=(None,"_y"))
+    cellxgene_obs.drop(columns=['soma_joinid_y'], inplace=True)
+    cellxgene_obs_filtered = cellxgene_obs[cellxgene_obs['collection_name'].isin(ref_collections)]
+    # eventually change this to filter out "restricted cell types" from passed file
+    restricted_celltypes_hs=["unknown", "glutamatergic neuron"]
+    restricted_celltypes_mmus=["unknown"]
     if organism == "homo_sapiens":
-        brain_obs_filtered = brain_obs_filtered[~brain_obs_filtered['cell_type'].isin(["unknown", "glutamatergic neuron"])] # remove non specific cells
+        cellxgene_obs_filtered = cellxgene_obs_filtered[~cellxgene_obs_filtered['cell_type'].isin(restricted_celltypes_hs)] # remove non specific cells
      
     elif organism == "mus_musculus":
-         brain_obs_filtered = brain_obs_filtered[~brain_obs_filtered['cell_type'].isin([# remove non specific cells
-                                                                                        "unknown",
-                                                                                        "hippocampal neuron", 
-                                                                                        "cortical interneuron", 
-                                                                                        "meis2 expressing cortical GABAergic cell", 
-                                                                                        "glutamatergic neuron"])]
-        # pd.DataFrame(brain_obs_filtered[["cell_type","collection_name","dataset_title"]].value_counts().reset_index()).to_csv("/space/grp/rschwartz/rschwartz/cell_annotation_cortex.nf/meta/mm_census_brain_info.tsv",sep='\t',index=False)
+         cellxgene_obs_filtered = cellxgene_obs_filtered[~cellxgene_obs_filtered['cell_type'].isin(restricted_celltypes_mmus)]
     else:
        raise ValueError("Unsupported organism")
     
     if assay:
-        brain_obs_filtered = brain_obs_filtered[brain_obs_filtered["assay"].isin(assay)]
+        cellxgene_obs_filtered = cellxgene_obs_filtered[cellxgene_obs_filtered["assay"].isin(assay)]
     if tissue:
-        brain_obs_filtered = brain_obs_filtered[brain_obs_filtered["tissue"].isin(tissue)]
+        cellxgene_obs_filtered = cellxgene_obs_filtered[cellxgene_obs_filtered["tissue"].isin(tissue)]
  
     # Adjust organism naming for compatibility
     organism_name_mapping = {
@@ -216,20 +220,20 @@ def get_census(census_version="2024-07-01", organism="homo_sapiens", subsample=5
         "assay", "cell_type", "cell_type_ontology_term_id", "tissue",
         "tissue_general", "suspension_type",
         "disease", "dataset_id", "development_stage",
-        "soma_joinid"
+        "soma_joinid", "obervation_joinid"
     ]
     
     refs = {}
     
     # Get embeddings for all data together
-    filtered_ids = brain_obs_filtered['soma_joinid'].values
+    filtered_ids = cellxgene_obs_filtered['soma_joinid'].values
     adata = extract_data(
-        brain_obs_filtered, filtered_ids,
+        cellxgene_obs_filtered, filtered_ids,
         subsample=subsample, organism=organism,
         census=census, obs_filter=None,
         cell_columns=cell_columns, dataset_info=dataset_info, seed = seed
     )
-    adata.obs=rename_cells(adata.obs) 
+    adata.obs=rename_cells(adata.obs, rename_file=rename_file) 
     
     
     # Creating the key dynamically based on tissue and assay

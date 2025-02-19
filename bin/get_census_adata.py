@@ -37,9 +37,11 @@ def parse_arguments():
     parser.add_argument('--census_version', type=str, default='2024-07-01', help='Census version (e.g., 2024-07-01)')
     parser.add_argument('--ref_collections', type=str, nargs = '+', default = ["A taxonomy of transcriptomic cell types across the isocortex and hippocampal formation"]) 
     parser.add_argument('--seed', type=int, default=42)
+    parser.add_argument('--organ', type=str, default="brain")
     parser.add_argument('--assay', type=str, nargs = "+", help="Assays to use from reference", default=None)
     parser.add_argument('--tissue', type=str, nargs="+", default = None, help = "Cortex region to pull from (default: all)")
     parser.add_argument('--subsample', type=str, help="Number of cells per cell type to subsample from reference", default=500)
+    parser.add_argument('--rename_file', type=str, default="/space/grp/rschwartz/rschwartz/cell_annotation_cortex.nf/meta/rename_cells.tsv")
     if __name__ == "__main__":
         known_args, _ = parser.parse_known_args()
         return known_args
@@ -57,10 +59,11 @@ def main():
    assay = args.assay
    subsample = args.subsample
    tissue = args.tissue
-  
+   organ=args.organ
+   rename_file=args.rename_file
    refs=get_census(organism=organism, 
-                     subsample=subsample, census_version=census_version, 
-                        ref_collections=ref_collections, assay=assay, tissue=tissue, seed=SEED)
+                     subsample=subsample, census_version=census_version, organ=organ,
+                        ref_collections=ref_collections, assay=assay, tissue=tissue, rename_file=rename_file, seed=SEED)
 
    print("finished fetching anndata")
    outdir="refs"
